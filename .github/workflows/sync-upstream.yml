@@ -1,0 +1,57 @@
+# ============================================================
+# 自动同步上游 wess09/AzurPilot 到你的 fork
+#
+# 触发：每天 UTC 17:00（北京时间 01:00）检查一次 + 可手动 Run。
+# 行为：
+#   1. 拉取上游 master
+#   2. 若上游有本 fork 没有的新提交，则合并进 fork 的 master
+#   3. 打一个 sync-<时间戳> tag 并推送
+#   4. 该 tag 会自动触发 build-push-image.yml 重新构建镜像
+#
+# 注意：本工作流只「新增」了 Dockerfile.azurpilot 与 .github/workflows 下的
+#       自定义文件，没有改动上游既有文件，因此与上游合并基本不会冲突。
+#       若以后你手动改了上游也改的文件，合并可能冲突，工作流会失败并通知你。
+# ============================================================
+
+name: Sync Upstream and Trigger Build
+
+on:
+  schedule:
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # 需要推送 master 与 tag 到 fork
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream and tag if updated
+        run: |
+          UPSTREAM=https://github.com/wess09/AzurPilot.git
+          git remote add upstream "$UPSTREAM" 2>/dev/null || git remote set-url upstream "$UPSTREAM"
+          git fetch upstream master
+
+          BEHIND=$(git rev-list --count HEAD..upstream/master)
+          echo "Upstream commits ahead of fork: $BEHIND"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Already up to date, nothing to do."
+            exit 0
+          fi
+
+          git merge upstream/master --no-edit
+          TAG="sync-$(date -u +%Y%m%d-%H%M%S)"
+          git tag "$TAG"
+          git push origin master --tags
+          echo "Pushed tag $TAG -> build workflow will run."
