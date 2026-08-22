@@ -1,0 +1,78 @@
+# ============================================================
+# AzurPilot 镜像 Dockerfile（修正版）
+# 解决的问题：官方压缩包未附带 uv.lock，原 Dockerfile 中
+#   `COPY pyproject.toml uv.lock ./` 与 `uv sync --frozen`
+#   会直接失败。本文件在构建阶段自动生成 uv.lock。
+#
+# 用法（在解压后的 AzurPilot-master/ 根目录执行）：
+#   docker build -t azurpilot:latest -f Dockerfile.azurpilot .
+#
+# 国内用户可在 build 时加速依赖：
+#   docker build -t azurpilot:latest -f Dockerfile.azurpilot \
+#     --build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple .
+# ============================================================
+
+FROM python:3.14-slim-bookworm
+
+ARG UV_INDEX_URL=https://pypi.org/simple
+ARG UV_EXTRA_INDEX_URL=
+ARG HTTP_PROXY=
+ARG HTTPS_PROXY=
+ARG NO_PROXY=127.0.0.1,localhost
+
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+ENV UV_EXTRA_INDEX_URL=${UV_EXTRA_INDEX_URL}
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV HTTP_PROXY=${HTTP_PROXY}
+ENV HTTPS_PROXY=${HTTPS_PROXY}
+ENV no_proxy=${NO_PROXY}
+ENV NO_PROXY=${NO_PROXY}
+ENV PATH=/app/AzurPilot/.venv/bin:${PATH}
+
+WORKDIR /app/AzurPilot
+
+# 直接拿官方的 uv 单文件二进制
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+# 仅先复制 pyproject.toml，构建阶段生成锁文件
+COPY pyproject.toml ./
+
+# 代理场景下给 apt 配代理
+RUN if [ -n "$HTTP_PROXY" ]; then \
+      printf 'Acquire::http::Proxy "%s";\nAcquire::https::Proxy "%s";\n' "$HTTP_PROXY" "$HTTPS_PROXY" > /etc/apt/apt.conf.d/99proxy; \
+    fi
+
+# 系统级依赖：adb 连模拟器、libgl/libgomp 给 opencv/numba、git 给内置更新器
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      git \
+      adb \
+      libgomp1 \
+      libgl1 \
+      libglib2.0-0 \
+      openssh-client && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git config --global --add safe.directory '*' && \
+    if [ -n "$HTTP_PROXY" ]; then \
+      git config --global http.proxy "$HTTP_PROXY" && \
+      git config --global https.proxy "$HTTPS_PROXY"; \
+    fi
+
+# 1) 生成 uv.lock（压缩包里没有，官方 Dockerfile 因此会失败）
+# 2) 建可重定位虚拟环境并同步依赖（不安装项目本身，源码随后 COPY 进镜像直接运行）
+RUN uv lock && \
+    uv venv --relocatable --python /usr/local/bin/python .venv && \
+    uv sync --no-dev --no-install-project && \
+    cp /usr/local/bin/uv .venv/bin/uv && \
+    cp /usr/bin/adb .venv/bin/adb && \
+    cp /usr/bin/git .venv/bin/git && \
+    rm -rf /root/.cache/uv
+
+# 复制全部源码与资源（含 bin/ 下的 OCR 模型、assets 模板等，运行时必需）
+COPY . .
+
+# 默认启动 WebUI（gui.py 同时挂载内置 MCP 服务到 /mcp）
+CMD [".venv/bin/python", "gui.py"]
