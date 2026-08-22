@@ -1,0 +1,46 @@
+# ============================================================
+# 把 GHCR 上的 AzurPilot 镜像导出成 tar.gz 产物
+#
+# 用途：在没有 Docker 的机器上，也能拿到镜像文件。
+#   工作流运行环境自带 Docker，用 GITHUB_TOKEN（对自己的包有读写权限）
+#   拉取镜像 -> docker save 成 tar.gz -> 作为 Actions 产物上传。
+#   用户在 Actions 页面下载该产物即可（之后用 docker load 装载）。
+#
+# 触发：Actions 页面手动 Run workflow（输入 tag，默认 latest）
+# ============================================================
+
+name: Export Image as Tar Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要导出的镜像 tag（默认 latest）"
+        required: false
+        default: "latest"
+
+permissions:
+  packages: write      # GITHUB_TOKEN 对自己的 GHCR 包有读写，足以拉取
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Pull image
+        run: docker pull ghcr.io/${{ github.repository_owner }}/azurpilot:${{ inputs.tag }}
+
+      - name: Save image to tar.gz
+        run: docker save ghcr.io/${{ github.repository_owner }}/azurpilot:${{ inputs.tag }} | gzip > azurpilot.tar.gz
+
+      - name: Show size
+        run: ls -lh azurpilot.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: azurpilot-image-${{ inputs.tag }}
+          path: azurpilot.tar.gz
+          retention-days: 90
